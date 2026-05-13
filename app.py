@@ -6,7 +6,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from llm import LLMConfig, chat_completion
-from prompts import InterviewContext, build_system_prompt, mode_instruction
+from prompts import InterviewContext, build_system_prompt, mode_instruction, build_free_chat_system_prompt
+from storage import save_chat_session, get_saved_chats, load_chat_session
 
 
 load_dotenv()
@@ -27,13 +28,14 @@ def require_api_key() -> bool:
 
 def init_state() -> None:
     st.session_state.setdefault("history", [])
+    st.session_state.setdefault("free_chat_history", [])
 
 
 def sidebar_context() -> tuple[InterviewContext, str, float, float]:
     with st.sidebar:
         st.header("Settings")
 
-        model = st.text_input("OpenAI model", value="gpt-4.1-mini")
+        model = st.text_input("OpenAI model", value="llama-3.1-8b-instant")
         st.caption("Use any chat-capable model available in your account.")
 
         st.subheader("Interview context")
@@ -58,7 +60,25 @@ def sidebar_context() -> tuple[InterviewContext, str, float, float]:
         st.divider()
         if st.button("Clear conversation", use_container_width=True):
             st.session_state["history"] = []
+            st.session_state["free_chat_history"] = []
             st.rerun()
+            
+        st.divider()
+        st.subheader("Saved Free Chats")
+        chat_title = st.text_input("Chat title to save", value="My Interview Prep")
+        if st.button("Save Current Free Chat", use_container_width=True):
+            if st.session_state["free_chat_history"]:
+                save_chat_session(chat_title, st.session_state["free_chat_history"])
+                st.success(f"Saved '{chat_title}'!")
+            else:
+                st.warning("No chat history to save.")
+                
+        saved_chats = get_saved_chats()
+        if saved_chats:
+            selected_chat = st.selectbox("Load past chat", ["-- Select --"] + saved_chats)
+            if st.button("Load Chat", use_container_width=True) and selected_chat != "-- Select --":
+                st.session_state["free_chat_history"] = load_chat_session(selected_chat)
+                st.rerun()
 
     ctx = InterviewContext(
         role=role.strip(),
@@ -80,6 +100,16 @@ def render_history() -> None:
             st.markdown(m["content"])
 
 
+def add_to_free_chat_history(role: str, content: str) -> None:
+    st.session_state["free_chat_history"].append({"role": role, "content": content})
+
+
+def render_free_chat_history() -> None:
+    for m in st.session_state["free_chat_history"]:
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+
+
 def main() -> None:
     init_state()
     st.title("Interview Prep Chatbot")
@@ -92,8 +122,8 @@ def main() -> None:
     system_prompt = build_system_prompt(ctx)
     config = LLMConfig(model=model, temperature=temperature, top_p=top_p)
 
-    tab_mock, tab_improve, tab_questions, tab_demo = st.tabs(
-        ["Mock Interview", "Answer Improvement", "Question Generator", "Temp / Top‑p Demo"]
+    tab_mock, tab_improve, tab_questions, tab_free_chat, tab_demo = st.tabs(
+        ["Mock Interview", "Answer Improvement", "Question Generator", "Free Chat", "Temp / Top‑p Demo"]
     )
 
     with tab_mock:
@@ -162,6 +192,27 @@ def main() -> None:
                 config=config,
             )
             st.markdown(reply)
+
+    with tab_free_chat:
+        st.subheader("Free Chat")
+        st.write("Chat freely with the AI without any interview constraints.")
+        
+        render_free_chat_history()
+        
+        if prompt := st.chat_input("Ask anything…", key="free_chat_input"):
+            add_to_free_chat_history("user", prompt)
+            
+            free_system_prompt = build_free_chat_system_prompt()
+            
+            with st.spinner("Thinking..."):
+                reply = chat_completion(
+                    system_prompt=free_system_prompt,
+                    user_message=prompt,
+                    history=st.session_state["free_chat_history"][:-1],
+                    config=config,
+                )
+            add_to_free_chat_history("assistant", reply)
+            st.rerun()
 
     with tab_demo:
         st.subheader("Demonstrate temperature/top‑p differences (for your report)")
